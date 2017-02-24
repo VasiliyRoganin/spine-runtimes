@@ -603,7 +603,7 @@ namespace Spine.Unity.Editor {
 				var localAtlases = FindAtlasesAtPath(dir);
 				var requiredPaths = GetRequiredAtlasRegions(sp);
 				var atlasMatch = GetMatchingAtlas(requiredPaths, localAtlases);
-				if (atlasMatch != null) {
+				if (atlasMatch != null || requiredPaths.Count == 0) {
 					IngestSpineProject(AssetDatabase.LoadAssetAtPath(sp, typeof(TextAsset)) as TextAsset, atlasMatch);
 				} else {
 					bool resolved = false;
@@ -830,6 +830,8 @@ namespace Spine.Unity.Editor {
 			StringReader reader = new StringReader(spineJson.text);
 			var root = Json.Deserialize(reader) as Dictionary<string, object>;
 
+			if (!root.ContainsKey("skins"))
+				return requiredPaths;			
 
 			foreach (KeyValuePair<string, object> entry in (Dictionary<string, object>)root["skins"]) {
 				foreach (KeyValuePair<string, object> slotEntry in (Dictionary<string, object>)entry.Value) {
@@ -1191,6 +1193,7 @@ namespace Spine.Unity.Editor {
 				try {
 					rawVersion = SkeletonBinary.GetVersionString(new MemoryStream(asset.bytes));
 					//Debug.Log(rawVersion);
+					isSpineData = !(string.IsNullOrEmpty(rawVersion));
 				} catch (System.Exception e) {
 					Debug.LogErrorFormat("Failed to read '{0}'. It is likely not a binary Spine SkeletonData file.\n{1}", asset.name, e);
 					return false;
@@ -1325,9 +1328,12 @@ namespace Spine.Unity.Editor {
 				throw e;
 			}
 
-			skin = skin ?? data.DefaultSkin ?? data.Skins.Items[0];
-			newSkeletonAnimation.skeleton.SetSkin(skin);
-			newSkeletonAnimation.initialSkinName = skin.Name;
+			bool noSkins = data.DefaultSkin == null && (data.Skins == null || data.Skins.Count == 0); // Support attachmentless/skinless SkeletonData.
+			skin = skin ?? data.DefaultSkin ?? (noSkins ? null : data.Skins.Items[0]);
+			if (skin != null) {
+				newSkeletonAnimation.initialSkinName = skin.Name;
+				newSkeletonAnimation.skeleton.SetSkin(skin);
+			}
 
 			newSkeletonAnimation.skeleton.Update(0);
 			newSkeletonAnimation.state.Update(0);

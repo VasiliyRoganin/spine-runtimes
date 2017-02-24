@@ -43,7 +43,7 @@ namespace Spine.Unity.Editor {
 	using Event = UnityEngine.Event;
 	using Icons = SpineEditorUtilities.Icons;
 
-	[CustomEditor(typeof(SkeletonDataAsset))]
+	[CustomEditor(typeof(SkeletonDataAsset)), CanEditMultipleObjects]
 	public class SkeletonDataAssetInspector : UnityEditor.Editor {
 		static bool showAnimationStateData = true;
 		static bool showAnimationList = true;
@@ -83,24 +83,6 @@ namespace Spine.Unity.Editor {
 			SpineEditorUtilities.ConfirmInitialization();
 			m_skeletonDataAsset = (SkeletonDataAsset)target;
 
-			// Clear empty atlas array items.
-			{
-				bool hasNulls = false;
-				foreach (var a in m_skeletonDataAsset.atlasAssets) {
-					if (a == null) {
-						hasNulls = true;
-						break;
-					}
-				}
-				if (hasNulls) {
-					var trimmedAtlasAssets = new List<AtlasAsset>();
-					foreach (var a in m_skeletonDataAsset.atlasAssets) {
-						if (a != null) trimmedAtlasAssets.Add(a);
-					}
-					m_skeletonDataAsset.atlasAssets = trimmedAtlasAssets.ToArray();
-				}
-			}
-
 			atlasAssets = serializedObject.FindProperty("atlasAssets");
 			skeletonJSON = serializedObject.FindProperty("skeletonJSON");
 			scale = serializedObject.FindProperty("scale");
@@ -126,8 +108,8 @@ namespace Spine.Unity.Editor {
 
 			m_skeletonDataAssetGUID = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(m_skeletonDataAsset));
 			EditorApplication.update += EditorUpdate;
-			m_skeletonData = m_skeletonDataAsset.GetSkeletonData(false);
 			RepopulateWarnings();
+			m_skeletonData = warnings.Count == 0 ? m_skeletonDataAsset.GetSkeletonData(false) : null;
 		}
 
 		void OnDestroy () {
@@ -141,6 +123,34 @@ namespace Spine.Unity.Editor {
 		}
 
 		override public void OnInspectorGUI () {
+			if (serializedObject.isEditingMultipleObjects) {
+				using (new SpineInspectorUtility.BoxScope()) {
+					EditorGUILayout.LabelField("SkeletonData", EditorStyles.boldLabel);
+					EditorGUILayout.PropertyField(skeletonJSON, new GUIContent(skeletonJSON.displayName, Icons.spine));
+					EditorGUILayout.PropertyField(scale);
+				}
+
+				using (new SpineInspectorUtility.BoxScope()) {
+					EditorGUILayout.LabelField("Atlas", EditorStyles.boldLabel);
+					#if !SPINE_TK2D
+					EditorGUILayout.PropertyField(atlasAssets, true);
+					#else
+					using (new EditorGUI.DisabledGroupScope(spriteCollection.objectReferenceValue != null)) {
+						EditorGUILayout.PropertyField(atlasAssets, true);
+					}
+					EditorGUILayout.LabelField("spine-tk2d", EditorStyles.boldLabel);
+					EditorGUILayout.PropertyField(spriteCollection, true);
+					#endif
+				}
+
+				using (new SpineInspectorUtility.BoxScope()) {
+					EditorGUILayout.LabelField("Mix Settings", EditorStyles.boldLabel);
+					SpineInspectorUtility.PropertyFieldWideLabel(defaultMix, DefaultMixLabel, 160);
+					EditorGUILayout.Space();
+				}
+				return;
+			}
+
 			{ 
 				// Lazy initialization because accessing EditorStyles values in OnEnable during a recompile causes UnityEditor to throw null exceptions. (Unity 5.3.5)
 				idlePlayButtonStyle = idlePlayButtonStyle ?? new GUIStyle(EditorStyles.miniButton);
@@ -200,8 +210,9 @@ namespace Spine.Unity.Editor {
 						m_previewUtility.Cleanup();
 						m_previewUtility = null;
 					}
-					RepopulateWarnings();
-					OnEnable();
+					m_skeletonDataAsset.Clear();
+					m_skeletonData = null;
+					OnEnable(); // Should call RepopulateWarnings.
 					return;
 				}
 			}
@@ -230,7 +241,6 @@ namespace Spine.Unity.Editor {
 				using (new EditorGUI.DisabledGroupScope(skeletonJSON.objectReferenceValue == null)) {
 					if (GUILayout.Button(new GUIContent("Attempt Reimport", Icons.warning))) {
 						DoReimport();
-						return;
 					}
 				}
 				#else
@@ -348,15 +358,12 @@ namespace Spine.Unity.Editor {
 
 		void DoReimport () {
 			SpineEditorUtilities.ImportSpineContent(new string[] { AssetDatabase.GetAssetPath(skeletonJSON.objectReferenceValue) }, true);
-
 			if (m_previewUtility != null) {
 				m_previewUtility.Cleanup();
 				m_previewUtility = null;
 			}
 
-			RepopulateWarnings();
-			OnEnable();
-
+			OnEnable(); // Should call RepopulateWarnings.
 			EditorUtility.SetDirty(m_skeletonDataAsset);
 		}
 
@@ -507,6 +514,25 @@ namespace Spine.Unity.Editor {
 		void RepopulateWarnings () {
 			warnings.Clear();
 
+			// Clear null entries.
+			{
+				bool hasNulls = false;
+				foreach (var a in m_skeletonDataAsset.atlasAssets) {
+					if (a == null) {
+						hasNulls = true;
+						break;
+					}
+				}
+				if (hasNulls) {
+					var trimmedAtlasAssets = new List<AtlasAsset>();
+					foreach (var a in m_skeletonDataAsset.atlasAssets) {
+						if (a != null) trimmedAtlasAssets.Add(a);
+					}
+					m_skeletonDataAsset.atlasAssets = trimmedAtlasAssets.ToArray();
+				}
+				serializedObject.Update();
+			}
+
 			if (skeletonJSON.objectReferenceValue == null) {
 				warnings.Add("Missing Skeleton JSON");
 			} else {
@@ -516,12 +542,13 @@ namespace Spine.Unity.Editor {
 					#if !SPINE_TK2D
 					bool detectedNullAtlasEntry = false;
 					var atlasList = new List<Atlas>();
-					for (int i = 0; i < atlasAssets.arraySize; i++) {
-						if (atlasAssets.GetArrayElementAtIndex(i).objectReferenceValue == null) {
+					var actualAtlasAssets = m_skeletonDataAsset.atlasAssets;
+					for (int i = 0; i < actualAtlasAssets.Length; i++) {
+						if (m_skeletonDataAsset.atlasAssets[i] == null) {
 							detectedNullAtlasEntry = true;
 							break;
 						} else {
-							atlasList.Add(((AtlasAsset)atlasAssets.GetArrayElementAtIndex(i).objectReferenceValue).GetAtlas());
+							atlasList.Add(actualAtlasAssets[i].GetAtlas());
 						}
 					}
 
@@ -614,26 +641,37 @@ namespace Spine.Unity.Editor {
 		void CreatePreviewInstances () {
 			this.DestroyPreviewInstances();
 
+			if (warnings.Count > 0) {
+				m_skeletonDataAsset.Clear();
+				return;
+			}
+
 			var skeletonDataAsset = (SkeletonDataAsset)target;
 			if (skeletonDataAsset.GetSkeletonData(false) == null)
 				return;
 
 			if (this.m_previewInstance == null) {
 				string skinName = EditorPrefs.GetString(m_skeletonDataAssetGUID + "_lastSkin", "");
-				m_previewInstance = SpineEditorUtilities.InstantiateSkeletonAnimation(skeletonDataAsset, skinName).gameObject;
 
-				if (m_previewInstance != null) {
-					m_previewInstance.hideFlags = HideFlags.HideAndDontSave;
-					m_previewInstance.layer = 0x1f;
-					m_skeletonAnimation = m_previewInstance.GetComponent<SkeletonAnimation>();
-					m_skeletonAnimation.initialSkinName = skinName;
-					m_skeletonAnimation.LateUpdate();
-					m_skeletonData = m_skeletonAnimation.skeletonDataAsset.GetSkeletonData(true);
-					m_previewInstance.GetComponent<Renderer>().enabled = false;
-					m_initialized = true;
+				try {
+					m_previewInstance = SpineEditorUtilities.InstantiateSkeletonAnimation(skeletonDataAsset, skinName).gameObject;
+
+					if (m_previewInstance != null) {
+						m_previewInstance.hideFlags = HideFlags.HideAndDontSave;
+						m_previewInstance.layer = 0x1f;
+						m_skeletonAnimation = m_previewInstance.GetComponent<SkeletonAnimation>();
+						m_skeletonAnimation.initialSkinName = skinName;
+						m_skeletonAnimation.LateUpdate();
+						m_skeletonData = m_skeletonAnimation.skeletonDataAsset.GetSkeletonData(true);
+						m_previewInstance.GetComponent<Renderer>().enabled = false;
+						m_initialized = true;
+					}
+
+					AdjustCameraGoals(true);
+				} catch {
+					DestroyPreviewInstances();
 				}
 
-				AdjustCameraGoals(true);
 			}
 		}
 
@@ -645,8 +683,11 @@ namespace Spine.Unity.Editor {
 			m_initialized = false;
 		}
 
-		public override bool HasPreviewGUI () {
-			// MITCH: left todo: validate json data
+		public override bool HasPreviewGUI () {			
+			if (serializedObject.isEditingMultipleObjects) {
+				// JOHN: Implement multi-preview.
+				return false;
+			}
 
 			for (int i = 0; i < atlasAssets.arraySize; i++) {
 				var prop = atlasAssets.GetArrayElementAtIndex(i);
